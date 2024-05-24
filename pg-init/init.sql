@@ -20,11 +20,11 @@ ON CONFLICT (name) DO NOTHING;
 CREATE TABLE IF NOT EXISTS orders (
     order_id SERIAL PRIMARY KEY,
     customer_id INTEGER,
-    product_id INTEGER,
+    order_products_id INTEGER,
     amount DECIMAL,
     payment_status VARCHAR(255) DEFAULT 'Pending',
     FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
-    FOREIGN KEY (product_id) REFERENCES products(product_id)
+    FOREIGN KEY (order_products_id) REFERENCES order_products(order_products_id)
 );
 
 CREATE TABLE IF NOT EXISTS order_products (
