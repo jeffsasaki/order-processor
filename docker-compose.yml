@@ -10,13 +10,15 @@ services:
     environment:
       DB_CONN_STR: "postgres://user:password@postgres/db?sslmode=disable"
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq/"
-  
+    restart: on-failure
+
   payment-service:
     build: ./payment-service
     depends_on:
       - rabbitmq
     environment:
       RABBITMQ_URL: "amqp://guest:guest@rabbitmq/"
+    restart: on-failure
   
   postgres:
     image: postgres
@@ -26,12 +28,11 @@ services:
       POSTGRES_PASSWORD: password
     ports:
       - "5432:5432"
+    volumes:
+      - ./pg-init:/docker-entrypoint-initdb.d
 
   rabbitmq:
     image: rabbitmq:3-management
     ports:
       - "15672:15672"
       - "5672:5672"
-
-volumes:
-  postgres_data:

@@ -7,9 +7,9 @@ import (
 	"github.com/streadway/amqp"
 )
 
-type PaymentInfo struct {
-	OrderID int    `json:"order_id"`
-	Status  string `json:"status"`
+type PaymentUpdate struct {
+	OrderID       int    `json:"order_id"`
+	PaymentStatus string `json:"payment_status"`
 }
 
 func main() {
