@@ -6,35 +6,11 @@ import (
 	"log"
 	"net/http"
 
+	"order-processor/models"
+
 	_ "github.com/lib/pq"
 	"github.com/streadway/amqp"
 )
-
-type Customer struct {
-	ID        int    `json:"customer_id,omitempty"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
-	Email     string `json:"email"`
-}
-
-type Order struct {
-	ID       int       `json:"order_id"`
-	Customer Customer  `json:"customer"`
-	Products []Product `json:"products"`
-	Amount   float64   `json:"amount"`
-	Status   string    `json:"status,omitempty"`
-}
-
-type PaymentStatusUpdate struct {
-	OrderID       int    `json:"order_id"`
-	PaymentStatus string `json:"payment_status"`
-}
-
-type Product struct {
-	ProductID int     `json:"product_id"`
-	Name      string  `json:"name,omitempty"`
-	Price     float64 `json:"price"`
-}
 
 var db *sql.DB
 var rabbitConn *amqp.Connection
@@ -54,14 +30,15 @@ func main() {
 	defer rabbitConn.Close()
 
 	// RabbitMQ consumer
-	setupPaymentUpdateConsumer()
+	SetupPaymentUpdateConsumer()
 
-	http.HandleFunc("/orders", handleOrders)
-	http.HandleFunc("/order", handleOrderSubmission)
+	http.HandleFunc("/orders", HandleOrders)
+	http.HandleFunc("/order", HandleOrderSubmission)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func setupPaymentUpdateConsumer() {
+// Create consumer to consume message from payment service
+func SetupPaymentUpdateConsumer() {
 	ch, err := rabbitConn.Channel()
 	if err != nil {
 		log.Fatalf("Failed to open a channel: %v", err)
@@ -95,7 +72,7 @@ func setupPaymentUpdateConsumer() {
 	go func() {
 		for d := range msgs {
 			log.Printf("Message received: %s", d.Body)
-			var update PaymentStatusUpdate
+			var update model.PaymentStatusUpdate
 			if err := json.Unmarshal(d.Body, &update); err != nil {
 				log.Printf("Error decoding message: %v", err)
 				d.Nack(false, true)
@@ -116,7 +93,8 @@ func setupPaymentUpdateConsumer() {
 	}()
 }
 
-func handleOrders(w http.ResponseWriter, r *http.Request) {
+// Get all orders
+func HandleOrders(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`
         SELECT
             o.order_id, o.amount,
@@ -134,31 +112,31 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	orders := map[int]*Order{}
+	orders := map[int]*model.Order{}
 	for rows.Next() {
-		var order Order
-		var product Product
+		var order model.Order
+		var product model.Product
 		var status string
-		var customer Customer
+		var customer model.Customer
 		if err := rows.Scan(&order.ID, &order.Amount, &customer.ID, &customer.FirstName, &customer.LastName, &customer.Email, &status, &product.ProductID, &product.Name, &product.Price); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		if _, ok := orders[order.ID]; !ok {
-			orders[order.ID] = &Order{
+			orders[order.ID] = &model.Order{
 				ID:       order.ID,
 				Amount:   order.Amount,
 				Customer: customer,
 				Status:   status,
-				Products: []Product{product},
+				Products: []model.Product{product},
 			}
 		} else {
 			orders[order.ID].Products = append(orders[order.ID].Products, product)
 		}
 	}
 
-	results := make([]Order, 0, len(orders))
+	results := make([]model.Order, 0, len(orders))
 	for _, order := range orders {
 		results = append(results, *order)
 	}
@@ -167,8 +145,9 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(results)
 }
 
-func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
-	var order Order
+// Create an order and publish message for payment service to consume
+func HandleOrderSubmission(w http.ResponseWriter, r *http.Request) {
+	var order model.Order
 	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
