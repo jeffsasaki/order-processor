@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id SERIAL PRIMARY KEY,
     customer_id INTEGER,
     product_id INTEGER,
+    amount DECIMAL,
     payment_status VARCHAR(255) DEFAULT 'Pending',
     FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
     FOREIGN KEY (product_id) REFERENCES products(product_id)
