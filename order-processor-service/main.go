@@ -27,7 +27,6 @@ type Order struct {
 type PaymentUpdate struct {
 	OrderID       int    `json:"order_id"`
 	PaymentStatus string `json:"payment_status"`
-	TransactionID string `json:"transaction_id"`
 }
 
 var db *sql.DB

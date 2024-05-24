@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     customer_id INTEGER,
     product_id INTEGER,
-    status VARCHAR(255),
+    payment_status VARCHAR(255),
     FOREIGN KEY (customer_id) REFERENCES customers(id),
     FOREIGN KEY (product_id) REFERENCES products(id)
 );

@@ -55,17 +55,17 @@ func main() {
 	go func() {
 		for d := range msgs {
 			log.Printf("Received a message: %s", d.Body)
-			var paymentInfo PaymentInfo
-			if err := json.Unmarshal(d.Body, &paymentInfo); err != nil {
+			var paymentUpdate PaymentUpdate
+			if err := json.Unmarshal(d.Body, &paymentUpdate); err != nil {
 				log.Printf("Error parsing payment info: %v", err)
 				continue
 			}
 
 			// Simulate payment processing
-			paymentInfo.Status = "Processed"
+			paymentUpdate.PaymentStatus = "Processed"
 
 			// Update order status in the database (assuming access to the DB or another service)
-			log.Printf("Processed order %d, status %s", paymentInfo.OrderID, paymentInfo.Status)
+			log.Printf("Processed order %d, status %s", paymentUpdate.OrderID, paymentUpdate.PaymentStatus)
 		}
 	}()
 
