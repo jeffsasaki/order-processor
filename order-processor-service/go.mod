@@ -1,4 +1,4 @@
-module github.com/jeffsasaki/order-processor
+module order-processor-service
 
 go 1.22.3
 

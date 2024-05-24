@@ -1,4 +1,4 @@
-module order-processor
+module payment-service
 
 go 1.22.3
 

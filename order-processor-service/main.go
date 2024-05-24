@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-
-	"github.com/jeffsasaki/order-processor/models"
+	"order-processor-service/models"
 
 	_ "github.com/lib/pq"
 	amqp "github.com/rabbitmq/amqp091-go"
