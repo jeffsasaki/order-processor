@@ -1,8 +1,6 @@
-package amqp_client
+package client
 
-import (
-	"github.com/streadway/amqp"
-)
+import amqp "github.com/rabbitmq/amqp091-go"
 
 // AmqpClient defines the interface for all AMQP operations
 type AmqpClient interface {

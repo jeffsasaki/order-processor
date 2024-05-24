@@ -7,7 +7,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/gomega v1.33.1
-	github.com/streadway/amqp v1.1.0
+	github.com/rabbitmq/amqp091-go v1.10.0
 )
 
 require (

@@ -6,10 +6,11 @@ import (
 	"log"
 	"net/http"
 
-	"order-processor/models"
+	client "order-processor/clients"
+	model "order-processor/models"
 
 	_ "github.com/lib/pq"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 var db *sql.DB
@@ -23,74 +24,44 @@ func main() {
 	}
 	defer db.Close()
 
-	rabbitConn, err = amqp.Dial("amqp://guest:guest@rabbitmq/")
+	rabbitConn, err := amqp.Dial("amqp://guest:guest@rabbitmq/")
 	if err != nil {
 		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
 	}
 	defer rabbitConn.Close()
 
-	// RabbitMQ consumer
-	SetupPaymentUpdateConsumer()
+	amqpClient := client.NewAmqpClient(rabbitConn)
+	SetupPaymentUpdateConsumer(amqpClient)
 
 	http.HandleFunc("/orders", HandleOrders)
-	http.HandleFunc("/order", HandleOrderSubmission)
+	http.HandleFunc("/order", func(w http.ResponseWriter, r *http.Request) {
+		HandleOrderSubmission(w, r, amqpClient)
+	})
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
 // Create consumer to consume message from payment service
-func SetupPaymentUpdateConsumer() {
-	ch, err := rabbitConn.Channel()
-	if err != nil {
-		log.Fatalf("Failed to open a channel: %v", err)
-	}
-
-	q, err := ch.QueueDeclare(
-		"payment_update_queue",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		log.Fatalf("Failed to declare a queue: %v", err)
-	}
-
-	msgs, err := ch.Consume(
-		q.Name,
-		"",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		log.Fatalf("Failed to register a consumer: %v", err)
-	}
-
-	go func() {
-		for d := range msgs {
-			log.Printf("Message received: %s", d.Body)
-			var update model.PaymentStatusUpdate
-			if err := json.Unmarshal(d.Body, &update); err != nil {
-				log.Printf("Error decoding message: %v", err)
-				d.Nack(false, true)
-				continue
-			}
-
-			log.Printf("Updating database for order ID %d with status %s", update.OrderID, update.PaymentStatus)
-			_, err := db.Exec("UPDATE orders SET payment_status = $1 WHERE order_id = $2", update.PaymentStatus, update.OrderID)
-			if err != nil {
-				log.Printf("Database update failed: %v", err)
-				d.Nack(false, true)
-				continue
-			}
-
-			d.Ack(false)
-			log.Printf("Order %d updated to status %s", update.OrderID, update.PaymentStatus)
+func SetupPaymentUpdateConsumer(amqpClient client.AmqpClient) {
+	handler := func(d amqp.Delivery) {
+		var update model.PaymentStatusUpdate
+		if err := json.Unmarshal(d.Body, &update); err != nil {
+			log.Printf("Error decoding message: %v", err)
+			d.Nack(false, true)
+			return
 		}
-	}()
+		log.Printf("Updating database for order ID %d with status %s", update.OrderID, update.PaymentStatus)
+		_, err := db.Exec("UPDATE orders SET payment_status = $1 WHERE order_id = $2", update.PaymentStatus, update.OrderID)
+		if err != nil {
+			log.Printf("Database update failed: %v", err)
+			d.Nack(false, true)
+		}
+		d.Ack(false)
+	}
+
+	err := amqpClient.SetupConsumer("payment_update_queue", handler)
+	if err != nil {
+		log.Fatalf("Failed to set up consumer: %v", err)
+	}
 }
 
 // Get all orders
@@ -146,7 +117,7 @@ func HandleOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 // Create an order and publish message for payment service to consume
-func HandleOrderSubmission(w http.ResponseWriter, r *http.Request) {
+func HandleOrderSubmission(w http.ResponseWriter, r *http.Request, amqpClient client.AmqpClient) {
 	var order model.Order
 	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -220,13 +191,7 @@ func HandleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 	order.ID = orderID
 	order.Amount = float64(totalAmount)
 	body, _ := json.Marshal(order)
-	err = ch.Publish(
-		"", "order_queue", false, false,
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
-		},
-	)
+	err = amqpClient.Publish(body, "order_queue")
 	if err != nil {
 		http.Error(w, "Failed to publish a message", http.StatusInternalServerError)
 		return
