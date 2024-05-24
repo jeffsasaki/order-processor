@@ -11,22 +11,28 @@ import (
 )
 
 type Customer struct {
-	ID        int    `json:"id,omitempty"`
+	ID        int    `json:"customer_id,omitempty"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
 	Email     string `json:"email"`
 }
 
 type Order struct {
-	ID       int      `json:"id"`
-	Customer Customer `json:"customer"`
-	Product  string   `json:"product"`
-	Status   string   `json:"status"`
+	ID       int       `json:"order_id"`
+	Customer Customer  `json:"customer"`
+	Products []Product `json:"products"`
+	Status   string    `json:"status,omitempty"`
 }
 
 type PaymentUpdate struct {
-	OrderID       int    `json:"order_id"`
+	OrderID       int    `json:"payment_id"`
 	PaymentStatus string `json:"payment_status"`
+}
+
+type Product struct {
+	ProductID int     `json:"product_id"`
+	Name      string  `json:"product_name,omitempty"`
+	Price     float32 `json:"product_price,omitempty"`
 }
 
 var db *sql.DB
@@ -108,25 +114,56 @@ func setupPaymentUpdateListener() {
 }
 
 func handleOrders(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT o.id, o.product, o.status, c.id, c.first_name, c.last_name, c.email FROM orders o JOIN customers c ON o.customer_id = c.id")
+	rows, err := db.Query(`
+        SELECT
+            o.order_id,
+            c.customer_id, c.first_name, c.last_name, c.email,
+            o.payment_status,
+            p.product_id, p.name, p.price
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.customer_id
+        JOIN order_products op ON o.order_id = op.order_id
+        JOIN products p ON op.product_id = p.product_id
+    `)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var orders []Order
+	orders := map[int]*Order{}
 	for rows.Next() {
-		var order Order
-		if err := rows.Scan(&order.ID, &order.Product, &order.Status, &order.Customer.ID, &order.Customer.FirstName, &order.Customer.LastName, &order.Customer.Email); err != nil {
+		var orderID int
+		var product Product
+		var status string
+		var customer Customer
+		if err := rows.Scan(&orderID, &customer.ID, &customer.FirstName, &customer.LastName, &customer.Email, &status, &product.ProductID, &product.Name, &product.Price); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		orders = append(orders, order)
+
+		log.Printf("OrderID: %d, CustomerID: %d, FirstName: %s, LastName: %s, Email: %s, Status: %s, ProductID: %d, ProductName: %s, Price: %f",
+			orderID, customer.ID, customer.FirstName, customer.LastName, customer.Email, status, product.ProductID, product.Name, product.Price)
+
+		if _, ok := orders[orderID]; !ok {
+			orders[orderID] = &Order{
+				ID:       orderID,
+				Customer: customer,
+				Status:   status,
+				Products: []Product{product}, // Initialize with the first product
+			}
+		} else {
+			orders[orderID].Products = append(orders[orderID].Products, product)
+		}
+	}
+
+	results := make([]Order, 0, len(orders))
+	for _, order := range orders {
+		results = append(results, *order)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(orders)
+	json.NewEncoder(w).Encode(results)
 }
 
 func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
@@ -136,16 +173,37 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// First, insert or update the customer in the database
 	var customerID int
-	err := db.QueryRow("INSERT INTO customers (first_name, last_name, email) VALUES ($1, $2, $3) ON CONFLICT (email) DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name RETURNING id", order.Customer.FirstName, order.Customer.LastName, order.Customer.Email).Scan(&customerID)
+	err := db.QueryRow("INSERT INTO customers (first_name, last_name, email) VALUES ($1, $2, $3) ON CONFLICT (email) DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name RETURNING customer_id", order.Customer.FirstName, order.Customer.LastName, order.Customer.Email).Scan(&customerID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Then, insert the order with the customer_id
-	_, err = db.Exec("INSERT INTO orders (customer_id, product, status) VALUES ($1, $2, 'Pending')", customerID, order.Product)
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var orderID int
+	err = tx.QueryRow("INSERT INTO orders (customer_id, payment_status) VALUES ($1, 'Pending') RETURNING order_id", customerID).Scan(&orderID)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, product := range order.Products {
+		_, err = tx.Exec("INSERT INTO order_products (order_id, product_id) VALUES ($1, $2)", orderID, product.ProductID)
+		if err != nil {
+			tx.Rollback()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	err = tx.Commit()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -159,12 +217,10 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 	defer ch.Close()
 
 	order.Customer.ID = customerID
+	order.ID = orderID
 	body, _ := json.Marshal(order)
 	err = ch.Publish(
-		"",            // exchange
-		"order_queue", // routing key
-		false,         // mandatory
-		false,         // immediate
+		"", "order_queue", false, false,
 		amqp.Publishing{
 			ContentType: "application/json",
 			Body:        body,
