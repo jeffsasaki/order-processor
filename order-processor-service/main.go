@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"order-processor-service/models"
+	model "order-processor-service/models"
 
 	_ "github.com/lib/pq"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -28,41 +28,41 @@ func main() {
 	}
 	defer rabbitConn.Close()
 
-	// Setup RabbitMQ consumer
-	setupPaymentUpdateListener()
+	// RabbitMQ consumer
+	SetupPaymentUpdateConsumer()
 
-	http.HandleFunc("/orders", handleOrders)
-	http.HandleFunc("/order", handleOrderSubmission)
+	http.HandleFunc("/orders", HandleOrders)
+	http.HandleFunc("/order", HandleOrderSubmission)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func setupPaymentUpdateListener() {
+// SetupPaymentUpdateConsumer creates consumer to consume message from payment service
+func SetupPaymentUpdateConsumer() {
 	ch, err := rabbitConn.Channel()
 	if err != nil {
 		log.Fatalf("Failed to open a channel: %v", err)
 	}
-	defer ch.Close()
 
 	q, err := ch.QueueDeclare(
-		"payment_updates", // name of the queue
-		true,              // durable
-		false,             // delete when unused
-		false,             // exclusive
-		false,             // no-wait
-		nil,               // arguments
+		"payment_update_queue",
+		false,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Fatalf("Failed to declare a queue: %v", err)
 	}
 
 	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		false,  // auto-ack
-		false,  // exclusive
-		false,  // no-local
-		false,  // no-wait
-		nil,    // args
+		q.Name,
+		"",
+		false,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Fatalf("Failed to register a consumer: %v", err)
@@ -70,29 +70,33 @@ func setupPaymentUpdateListener() {
 
 	go func() {
 		for d := range msgs {
-			var update models.PaymentStatusUpdate
+			log.Printf("Message received: %s", d.Body)
+			var update model.PaymentStatusUpdate
 			if err := json.Unmarshal(d.Body, &update); err != nil {
 				log.Printf("Error decoding message: %v", err)
+				d.Nack(false, true)
 				continue
 			}
-			log.Printf("Received payment update: %+v", update)
 
-			// Update the order status based on the payment status
-			_, err := db.Exec("UPDATE orders SET status = $1 WHERE id = $2", update.PaymentStatus, update.OrderID)
+			log.Printf("Updating database for order ID %d with status %s", update.OrderID, update.PaymentStatus)
+			_, err := db.Exec("UPDATE orders SET payment_status = $1 WHERE order_id = $2", update.PaymentStatus, update.OrderID)
 			if err != nil {
-				log.Printf("Failed to update order status: %v", err)
+				log.Printf("Database update failed: %v", err)
+				d.Nack(false, true)
 				continue
 			}
 
-			d.Ack(false) // Acknowledge the message after processing
+			d.Ack(false)
+			log.Printf("Order %d updated to status %s", update.OrderID, update.PaymentStatus)
 		}
 	}()
 }
 
-func handleOrders(w http.ResponseWriter, r *http.Request) {
+// HandleOrders gets all orders
+func HandleOrders(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`
         SELECT
-            o.order_id,
+            o.order_id, o.amount,
             c.customer_id, c.first_name, c.last_name, c.email,
             o.payment_status,
             p.product_id, p.name, p.price
@@ -107,33 +111,31 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	orders := map[int]*models.Order{}
+	orders := map[int]*model.Order{}
 	for rows.Next() {
-		var orderID int
-		var product models.Product
+		var order model.Order
+		var product model.Product
 		var status string
-		var customer models.Customer
-		if err := rows.Scan(&orderID, &customer.ID, &customer.FirstName, &customer.LastName, &customer.Email, &status, &product.ProductID, &product.Name, &product.Price); err != nil {
+		var customer model.Customer
+		if err := rows.Scan(&order.ID, &order.Amount, &customer.ID, &customer.FirstName, &customer.LastName, &customer.Email, &status, &product.ProductID, &product.Name, &product.Price); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("OrderID: %d, CustomerID: %d, FirstName: %s, LastName: %s, Email: %s, Status: %s, ProductID: %d, ProductName: %s, Price: %f",
-			orderID, customer.ID, customer.FirstName, customer.LastName, customer.Email, status, product.ProductID, product.Name, product.Price)
-
-		if _, ok := orders[orderID]; !ok {
-			orders[orderID] = &models.Order{
-				ID:       orderID,
+		if _, ok := orders[order.ID]; !ok {
+			orders[order.ID] = &model.Order{
+				ID:       order.ID,
+				Amount:   order.Amount,
 				Customer: customer,
 				Status:   status,
-				Products: []models.Product{product}, // Initialize with the first product
+				Products: []model.Product{product},
 			}
 		} else {
-			orders[orderID].Products = append(orders[orderID].Products, product)
+			orders[order.ID].Products = append(orders[order.ID].Products, product)
 		}
 	}
 
-	results := make([]models.Order, 0, len(orders))
+	results := make([]model.Order, 0, len(orders))
 	for _, order := range orders {
 		results = append(results, *order)
 	}
@@ -142,21 +144,11 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(results)
 }
 
-func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
-	var order models.Order
+// HandleOrderSubmission creates an order and publish message for payment service to consume
+func HandleOrderSubmission(w http.ResponseWriter, r *http.Request) {
+	var order model.Order
 	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	var customerID int
-	err := db.QueryRow(`
-		INSERT INTO customers (first_name, last_name, email)
-		VALUES ($1, $2, $3) ON CONFLICT (email)
-		DO UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name RETURNING customer_id`,
-		order.Customer.FirstName, order.Customer.LastName, order.Customer.Email).Scan(&customerID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -165,36 +157,57 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer tx.Rollback()
+
+	// Upsert customer info
+	var customerID int
+	err = tx.QueryRow(`
+        INSERT INTO customers (first_name, last_name, email)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (email) DO 
+            UPDATE SET first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name 
+            RETURNING customer_id`,
+		order.Customer.FirstName, order.Customer.LastName, order.Customer.Email).Scan(&customerID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var totalAmount float64 = 0
+	for _, product := range order.Products {
+		var price float64
+		err = tx.QueryRow("SELECT price FROM products WHERE product_id = $1", product.ProductID).Scan(&price)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		totalAmount += price
+	}
 
 	var orderID int
 	err = tx.QueryRow(`
-		INSERT INTO orders (customer_id, payment_status)
-		VALUES ($1, 'Pending') RETURNING order_id`,
-		customerID).Scan(&orderID)
+        INSERT INTO orders (customer_id, amount)
+        VALUES ($1, $2) RETURNING order_id`,
+		customerID, totalAmount).Scan(&orderID)
 	if err != nil {
-		tx.Rollback()
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	for _, product := range order.Products {
-		_, err = tx.Exec(
-			`INSERT INTO order_products (order_id, product_id)
-			VALUES ($1, $2)`,
-			orderID, product.ProductID)
+		_, err = tx.Exec("INSERT INTO order_products (order_id, product_id) VALUES ($1, $2)", orderID, product.ProductID)
 		if err != nil {
-			tx.Rollback()
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	err = tx.Commit()
-	if err != nil {
+	if err = tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	// Publish order for payment service to consume
 	ch, err := rabbitConn.Channel()
 	if err != nil {
 		http.Error(w, "Failed to open a channel", http.StatusInternalServerError)
@@ -204,6 +217,7 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 
 	order.Customer.ID = customerID
 	order.ID = orderID
+	order.Amount = float64(totalAmount)
 	body, _ := json.Marshal(order)
 	err = ch.Publish(
 		"", "order_queue", false, false,
