@@ -53,7 +53,7 @@ func main() {
 	}
 	defer rabbitConn.Close()
 
-	// Setup RabbitMQ consumer
+	// RabbitMQ consumer
 	setupPaymentUpdateConsumer()
 
 	http.HandleFunc("/orders", handleOrders)
@@ -68,7 +68,7 @@ func setupPaymentUpdateConsumer() {
 	}
 
 	q, err := ch.QueueDeclare(
-		"payment_update_queue", // This must match exactly in both services
+		"payment_update_queue",
 		false,
 		false,
 		false,
@@ -82,7 +82,7 @@ func setupPaymentUpdateConsumer() {
 	msgs, err := ch.Consume(
 		q.Name,
 		"",
-		false, // Manual acknowledgment
+		false,
 		false,
 		false,
 		false,
@@ -145,16 +145,13 @@ func handleOrders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// log.Printf("OrderID: %d, CustomerID: %d, FirstName: %s, LastName: %s, Email: %s, Status: %s, ProductID: %d, ProductName: %s, Price: %f",
-		// 	orderID, customer.ID, customer.FirstName, customer.LastName, customer.Email, status, product.ProductID, product.Name, product.Price)
-
 		if _, ok := orders[order.ID]; !ok {
 			orders[order.ID] = &Order{
 				ID:       order.ID,
 				Amount:   order.Amount,
 				Customer: customer,
 				Status:   status,
-				Products: []Product{product}, // Initialize with the first product
+				Products: []Product{product},
 			}
 		} else {
 			orders[order.ID].Products = append(orders[order.ID].Products, product)
@@ -177,15 +174,14 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Initialize transaction for database operations
 	tx, err := db.Begin()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback() // Ensures transaction is rolled back if not committed at the end
+	defer tx.Rollback()
 
-	// Insert or update customer information and get customer ID
+	// Upsert customer info
 	var customerID int
 	err = tx.QueryRow(`
         INSERT INTO customers (first_name, last_name, email)
@@ -199,7 +195,6 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Calculate total amount of the order by querying product prices from the database
 	var totalAmount float64 = 0
 	for _, product := range order.Products {
 		var price float64
@@ -211,7 +206,6 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		totalAmount += price
 	}
 
-	// Insert the order with the calculated total amount
 	var orderID int
 	err = tx.QueryRow(`
         INSERT INTO orders (customer_id, amount)
@@ -222,7 +216,6 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Insert order_product associations
 	for _, product := range order.Products {
 		_, err = tx.Exec("INSERT INTO order_products (order_id, product_id) VALUES ($1, $2)", orderID, product.ProductID)
 		if err != nil {
@@ -231,13 +224,12 @@ func handleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Commit the transaction
 	if err = tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Publish the order to RabbitMQ
+	// Publish order for payment service to consume
 	ch, err := rabbitConn.Channel()
 	if err != nil {
 		http.Error(w, "Failed to open a channel", http.StatusInternalServerError)

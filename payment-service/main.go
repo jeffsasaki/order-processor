@@ -46,39 +46,40 @@ func main() {
 	}
 	defer ch.Close()
 
+	// Consumer
 	q, err := ch.QueueDeclare(
-		"order_queue", // queue
-		false,         // durable
-		false,         // delete when unused
-		false,         // exclusive
-		false,         // no-wait
-		nil,           // arguments
+		"order_queue",
+		false,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Fatalf("Failed to declare a queue: %v", err)
 	}
 
-	// Declare another queue for publishing updates to Order Processor Service
+	// Producer - payment status update
 	paymentUpdateQueue, err := ch.QueueDeclare(
-		"payment_update_queue", // name of the new queue
-		false,                  // durable
-		false,                  // delete when unused
-		false,                  // exclusive
-		false,                  // no-wait
-		nil,                    // arguments
+		"payment_update_queue",
+		false,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Fatalf("Failed to declare the order processor queue: %v", err)
 	}
 
 	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		true,   // auto-ack
-		false,  // exclusive
-		false,  // no-local
-		false,  // no-wait
-		nil,    // args
+		q.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		log.Fatalf("Failed to register a consumer: %v", err)
@@ -109,7 +110,6 @@ func main() {
 
 			log.Printf("Determined payment status: %s", paymentStatus)
 
-			// Construct the status update message
 			statusUpdate := PaymentStatusUpdate{
 				OrderID:       order.ID,
 				PaymentStatus: paymentStatus,
@@ -121,12 +121,11 @@ func main() {
 				continue
 			}
 
-			// Publish the status update to the order processor queue
 			err = ch.Publish(
-				"",                      // exchange
-				paymentUpdateQueue.Name, // routing key (queue name)
-				false,                   // mandatory
-				false,                   // immediate
+				"",
+				paymentUpdateQueue.Name,
+				false,
+				false,
 				amqp.Publishing{
 					ContentType: "application/json",
 					Body:        statusUpdateBytes,
