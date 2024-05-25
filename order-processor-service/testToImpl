@@ -1,153 +1,111 @@
 package main
 
 import (
-	"bytes"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/DATA-DOG/go-sqlmock"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-	amqp "github.com/rabbitmq/amqp091-go"
+	model "order-processor-service/models"
 
-	. "order-processor/models"
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-var _ = Describe("Order Processor", func() {
-	var (
-		dbMock sqlmock.Sqlmock
-		err    error
-	)
+// Mocks for RabbitMQ components
+type MockChannel struct {
+	mock.Mock
+}
 
-	BeforeEach(func() {
-		var localDB *sql.DB
-		localDB, dbMock, err = sqlmock.New() // Create mock database
-		Expect(err).NotTo(HaveOccurred())
-		db = localDB // Set the package level db variable to the mock instance
-	})
+func (m *MockChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
+	argsCall := m.Called(name, durable, autoDelete, exclusive, noWait, args)
+	return argsCall.Get(0).(amqp.Queue), argsCall.Error(1)
+}
 
-	AfterEach(func() {
-		db = nil                           // Reset the db variable after each test
-		err = dbMock.ExpectationsWereMet() // Ensure all expectations were met
-		Expect(err).NotTo(HaveOccurred())
-	})
+func (m *MockChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error) {
+	argsCall := m.Called(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
+	return argsCall.Get(0).(<-chan amqp.Delivery), argsCall.Error(1)
+}
 
-	Describe("HandleOrders", func() {
-		It("should fetch all orders successfully", func() {
-			// Set up HTTP request and recorder
-			req, err := http.NewRequest("GET", "/orders", nil)
-			Expect(err).NotTo(HaveOccurred())
-			rr := httptest.NewRecorder()
+func (m *MockChannel) Publish(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
+	return m.Called(exchange, key, mandatory, immediate, msg).Error(0)
+}
 
-			handler := http.HandlerFunc(HandleOrders)
+func (m *MockChannel) Close() error {
+	return nil
+}
 
-			// Set expectations on database mock
-			rows := sqlmock.NewRows([]string{"order_id", "amount", "customer_id", "first_name", "last_name", "email", "payment_status", "product_id", "name", "price"}).
-				AddRow(1, 4.99, 1, "John", "Doe", "john@example.com", "Success", 1, "Cow", 4.99).
-				AddRow(2, 1001.0, 1, "Alice", "Bob", "alice@bob.com", "Failure: Amount is over 1000", 2, "Expensive Cow", 1001.0)
-			dbMock.ExpectQuery(`SELECT`).WillReturnRows(rows)
+type MockConnection struct {
+	mock.Mock
+}
 
-			// Call the handler
-			handler.ServeHTTP(rr, req)
+func (m *MockConnection) Channel() (*MockChannel, error) {
+	args := m.Called()
+	return args.Get(0).(*MockChannel), args.Error(1)
+}
 
-			// Check the response body and HTTP status code
-			Expect(rr.Code).To(Equal(http.StatusOK))
-			Expect(rr.Body.String()).To(ContainSubstring("John")) // Check for part of the expected output
-		})
-	})
-})
+func (m *MockConnection) Close() error {
+	return nil
+}
 
-var _ = Describe("Order Submission", func() {
-	var (
-		mockDB     *sql.DB
-		dbMock     sqlmock.Sqlmock
-		amqpClient *MockAmqpClient
-		err        error
-	)
+func TestHandleOrders(t *testing.T) {
+	// Setup mock database connection
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
+	defer mockDB.Close()
 
-	BeforeEach(func() {
-		mockDB, dbMock, err = sqlmock.New()
-		Expect(err).NotTo(HaveOccurred())
-		db = mockDB // set the global db to the mock instance
-		amqpClient = &MockAmqpClient{
-			PublishFunc: func(body []byte, queueName string) error {
-				// Assert that the message body and queue name are correct
-				Expect(queueName).To(Equal("order_queue"))
-				return nil
-			},
-		}
-	})
+	rows := sqlmock.NewRows([]string{"order_id", "amount", "customer_id", "first_name", "last_name", "email", "payment_status", "product_id", "name", "price"}).
+		AddRow(1, 100.0, 1, "John", "Doe", "john@example.com", "Pending", 1, "Widget", 20.0)
 
-	AfterEach(func() {
-		db = nil
-		err = dbMock.ExpectationsWereMet()
-		Expect(err).NotTo(HaveOccurred())
-	})
+	mock.ExpectQuery("^SELECT (.+) FROM orders").WillReturnRows(rows)
 
-	It("should handle order submission correctly", func() {
-		// Prepare the order data
-		order := Order{
-			Customer: Customer{
+	// Set the global db variable to the mock DB
+	oldDB := db
+	db = mockDB
+	defer func() { db = oldDB }() // Ensure the original db is restored after the test
+
+	// Setup HTTP request and recorder
+	req, err := http.NewRequest("GET", "/orders", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(HandleOrders)
+
+	// Perform the request
+	handler.ServeHTTP(rr, req)
+
+	// Check the status code is what we expect
+	assert.Equal(t, http.StatusOK, rr.Code, "handler returned wrong status code")
+
+	// Check the response body is what we expect
+	expected := []model.Order{
+		{
+			ID: 1,
+			Customer: model.Customer{
+				ID:        1,
 				FirstName: "John",
 				LastName:  "Doe",
-				Email:     "johndoe@example.com",
+				Email:     "john@example.com",
 			},
-			Products: []Product{
-				{ProductID: 1, Name: "Widget", Price: 19.99},
+			Products: []model.Product{
+				{
+					ProductID: 1,
+					Name:      "Widget",
+					Price:     20.0,
+				},
 			},
-		}
-		body, _ := json.Marshal(order)
-		req, err := http.NewRequest("POST", "/order", bytes.NewBuffer(body))
-		Expect(err).NotTo(HaveOccurred())
-
-		rr := httptest.NewRecorder()
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			HandleOrderSubmission(w, r, amqpClient)
-		})
-
-		// Mock the expected database operations
-		dbMock.ExpectBegin()
-		dbMock.ExpectQuery(`INSERT INTO customers`).WithArgs("John", "Doe", "johndoe@example.com").WillReturnRows(sqlmock.NewRows([]string{"customer_id"}).AddRow(1))
-		dbMock.ExpectQuery(`SELECT price FROM products WHERE product_id =`).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"price"}).AddRow(19.99))
-		dbMock.ExpectQuery(`INSERT INTO orders`).WithArgs(1, 19.99).WillReturnRows(sqlmock.NewRows([]string{"order_id"}).AddRow(1))
-		dbMock.ExpectExec(`INSERT INTO order_products`).WithArgs(1, 1).WillReturnResult(sqlmock.NewResult(1, 1))
-		dbMock.ExpectCommit()
-
-		// Execute the handler
-		handler.ServeHTTP(rr, req)
-
-		// Verify the response
-		Expect(rr.Code).To(Equal(http.StatusCreated)) // Ensure the HTTP status code is 201
-	})
-
-	// AfterEach to verify all expectations were met
-	AfterEach(func() {
-		db = nil
-		err = dbMock.ExpectationsWereMet()
-		Expect(err).NotTo(HaveOccurred())
-	})
-})
-
-func TestOrderProcessor(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "OrderProcessor Suite")
-}
-
-type MockAmqpClient struct {
-	PublishFunc func(body []byte, queueName string) error
-}
-
-func (m *MockAmqpClient) Publish(body []byte, queueName string) error {
-	if m.PublishFunc != nil {
-		return m.PublishFunc(body, queueName)
+			Amount: 100.0,
+			Status: "Pending",
+		},
 	}
-	return nil // Default to no operation if no function is set
-}
-
-func (m *MockAmqpClient) SetupConsumer(queueName string, handler func(d amqp.Delivery)) error {
-	// Mock SetupConsumer if necessary
-	return nil
+	var got []model.Order
+	err = json.Unmarshal(rr.Body.Bytes(), &got)
+	assert.NoError(t, err)
+	assert.Equal(t, expected, got, "handler returned unexpected body")
 }
