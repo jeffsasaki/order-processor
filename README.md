@@ -77,7 +77,7 @@ Written in Go, which consumes events of orders made and determine if payment sta
 
 ## Database Schema
 
-{image}
+![Database Schema](https://i.ibb.co/d7WmD9h/Screenshot-2024-05-24-at-7-41-07-PM.png)
 
 ## Improvements
 
