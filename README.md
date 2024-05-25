@@ -85,7 +85,7 @@ Written in Go, which consumes events of orders made and determine if payment sta
 | Prone to SQL Injection; not tested thoroughly. Only tested one basic query. | Sanitize user inputs and test for injections. |
 | No audit logs or payment logs for database stores. | Create trigger and audit table for any upsert / delete queries. |
 | Improve readability of code. Some functions are very long. | Move some code out into util functions. |
-| Provide better line coverage for unit tests. AMQP mocking proved to be a challenging feat for the given timeframe. | Add more unit tests and separate logic for better coverage. |
+| Provide better line coverage for unit tests. AMQP mocking proved to be a challenging feat. | Add more unit tests and separate logic for better coverage. |
 | No CICD / linting implemented | Add workflow and golint (or alternative linter) |
 | Duplication of models subdirectory | Ideally would like to keep this in a separate "common library" repository |
-| Better error handling. If a product ID cannot be found, users are given an SQL error | Ideally would like to keep this in a separate "common library" repository |
+| Better error handling. If a product ID cannot be found, users are given text errors instead of JSON | Implement better error handling |
