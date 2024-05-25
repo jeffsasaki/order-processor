@@ -146,8 +146,10 @@ func HandleOrders(w http.ResponseWriter, r *http.Request) {
 
 // HandleOrderSubmission creates an order and publish message for payment service to consume
 func HandleOrderSubmission(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
 	var order model.Order
-	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
+	if err := decoder.Decode(&order); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -178,6 +180,11 @@ func HandleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		var price float64
 		err = tx.QueryRow("SELECT price FROM products WHERE product_id = $1", product.ProductID).Scan(&price)
 		if err != nil {
+			if err == sql.ErrNoRows {
+				errResponse := json.NewEncoder(w).Encode(model.ErrorResponse{Error: "Invalid Product ID"})
+				http.Error(w, errResponse.Error(), http.StatusBadRequest)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

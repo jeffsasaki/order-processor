@@ -25,3 +25,7 @@ type Product struct {
 	Name      string  `json:"name,omitempty"`
 	Price     float64 `json:"price"`
 }
+
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
