@@ -9,14 +9,12 @@ The application consists of four components:
 * Postgres
 * RabbitMQ
 
-To run the application in a containerized environment, ensure Docker is installed. From the root directory, Simply run:
+To run the application in a containerized environment, ensure Docker is installed. From the root directory, simply run:
 ```
 docker-compose up --build
 ```
 
-The application will be exposed on http://localhost:8080/
-
-This will insert two products into the products table:
+The application will be exposed on http://localhost:8080/. After running `docker-compose up --build`, this will insert two products into the products table:
 * Product ID 1: "Cow" for 4.99
 * Product ID 2: "Expensive Cow" for 1001.00
 
@@ -29,7 +27,7 @@ curl --location 'http://localhost:8080/order' \
     "customer": {
         "first_name": "alice",
         "last_name": "bob",
-        "email": "; select 1"
+        "email": "alice@bob.com"
     },
     "products": [
         { "product_id": 1 },
@@ -44,7 +42,7 @@ curl --location 'http://localhost:8080/order' \
     "customer": {
         "first_name": "alice",
         "last_name": "bob",
-        "email": "; select 1"
+        "email": "alice@bob.com"
     },
     "products": [
         { "product_id": 1 }
@@ -83,10 +81,11 @@ Written in Go, which consumes events of orders made and determine if payment sta
 
 | Areas of Improvement | Solution |
 |----------------------|----------|
-| Use of plaintext credentials in code. | Move them to pulling from secrets. Sanitize commit history. |
+| Use of plaintext credentials in code. | Pull from secrets, and sanitize commit history. |
 | Prone to SQL Injection; not tested thoroughly. Only tested one basic query. | Sanitize user inputs and test for injections. |
-| No Audit logs for Database stores. | Create trigger for any upsert actions. |
+| No audit logs or payment logs for database stores. | Create trigger and audit table for any upsert / delete queries. |
 | Improve readability of code. Some functions are very long. | Move some code out into util functions. |
-| Provide better line coverage for unit tests. | Add more unit tests and separate logic for better coverage. |
-| No CICD / linting implemented | Add workflow and golint |
-| Duplication of models subdirectory | Ideally would like to keep this in a separate repository |
+| Provide better line coverage for unit tests. AMQP mocking proved to be a challenging feat for the given timeframe. | Add more unit tests and separate logic for better coverage. |
+| No CICD / linting implemented | Add workflow and golint (or alternative linter) |
+| Duplication of models subdirectory | Ideally would like to keep this in a separate "common library" repository |
+| Better error handling. If a product ID cannot be found, users are given an SQL error | Ideally would like to keep this in a separate "common library" repository |
