@@ -11,42 +11,6 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// Mocks for RabbitMQ components
-type MockChannel struct {
-	mock.Mock
-}
-
-func (m *MockChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
-	argsCall := m.Called(name, durable, autoDelete, exclusive, noWait, args)
-	return argsCall.Get(0).(amqp.Queue), argsCall.Error(1)
-}
-
-func (m *MockChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error) {
-	argsCall := m.Called(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
-	return argsCall.Get(0).(<-chan amqp.Delivery), argsCall.Error(1)
-}
-
-func (m *MockChannel) Publish(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
-	return m.Called(exchange, key, mandatory, immediate, msg).Error(0)
-}
-
-func (m *MockChannel) Close() error {
-	return nil
-}
-
-type MockConnection struct {
-	mock.Mock
-}
-
-func (m *MockConnection) Channel() (*MockChannel, error) {
-	args := m.Called()
-	return args.Get(0).(*MockChannel), args.Error(1)
-}
-
-func (m *MockConnection) Close() error {
-	return nil
-}
-
 // Test payment status determination based on order amount
 func TestPaymentStatus(t *testing.T) {
 	conn := &MockConnection{}
@@ -82,13 +46,46 @@ func TestPaymentStatus(t *testing.T) {
 
 			assert.Equal(t, 999.99, order.Amount)
 			paymentStatus := "Success"
-			if order.Amount > 1000 {
-				paymentStatus = "Failure: Amount exceeds 1000"
-			}
 			assert.Equal(t, paymentStatus, "Success")
 			received <- true
 		}
 	}()
 
 	<-received
+}
+
+// Mocks for RabbitMQ components
+type MockChannel struct {
+	mock.Mock
+}
+
+func (m *MockChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
+	argsCall := m.Called(name, durable, autoDelete, exclusive, noWait, args)
+	return argsCall.Get(0).(amqp.Queue), argsCall.Error(1)
+}
+
+func (m *MockChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp.Table) (<-chan amqp.Delivery, error) {
+	argsCall := m.Called(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
+	return argsCall.Get(0).(<-chan amqp.Delivery), argsCall.Error(1)
+}
+
+func (m *MockChannel) Publish(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) error {
+	return m.Called(exchange, key, mandatory, immediate, msg).Error(0)
+}
+
+func (m *MockChannel) Close() error {
+	return nil
+}
+
+type MockConnection struct {
+	mock.Mock
+}
+
+func (m *MockConnection) Channel() (*MockChannel, error) {
+	args := m.Called()
+	return args.Get(0).(*MockChannel), args.Error(1)
+}
+
+func (m *MockConnection) Close() error {
+	return nil
 }
