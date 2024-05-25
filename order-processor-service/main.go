@@ -181,8 +181,7 @@ func HandleOrderSubmission(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRow("SELECT price FROM products WHERE product_id = $1", product.ProductID).Scan(&price)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				errResponse := json.NewEncoder(w).Encode(model.ErrorResponse{Error: "Invalid Product ID"})
-				http.Error(w, errResponse.Error(), http.StatusBadRequest)
+				http.Error(w, "Invalid Product ID", http.StatusBadRequest)
 				return
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
